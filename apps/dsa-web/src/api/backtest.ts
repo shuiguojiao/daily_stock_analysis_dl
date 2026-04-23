@@ -6,6 +6,7 @@ import type {
   BacktestResultsResponse,
   BacktestResultItem,
   PerformanceMetrics,
+  TimelineResponse,
 } from '../types/backtest';
 
 // ============ API ============
@@ -114,5 +115,27 @@ export const backtestApi = {
       }
       throw err;
     }
+  },
+
+  /**
+   * Get month-by-month backtest trend data
+   */
+  getTimeline: async (params: {
+    evalWindowDays?: number;
+    code?: string;
+    analysisDateFrom?: string;
+    analysisDateTo?: string;
+  } = {}): Promise<TimelineResponse> => {
+    const queryParams: Record<string, string | number> = {};
+    if (params.evalWindowDays) queryParams.eval_window_days = params.evalWindowDays;
+    if (params.code) queryParams.code = params.code;
+    if (params.analysisDateFrom) queryParams.analysis_date_from = params.analysisDateFrom;
+    if (params.analysisDateTo) queryParams.analysis_date_to = params.analysisDateTo;
+
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/backtest/timeline',
+      { params: queryParams },
+    );
+    return toCamelCase<TimelineResponse>(response.data);
   },
 };

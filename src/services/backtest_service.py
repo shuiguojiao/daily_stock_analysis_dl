@@ -316,6 +316,60 @@ class BacktestService:
             self.get_summary(scope="stock", code=code, eval_window_days=eval_window_days)
         )
 
+    def get_monthly_timeline(
+        self,
+        *,
+        eval_window_days: Optional[int] = None,
+        code: Optional[str] = None,
+        analysis_date_from: Optional[date] = None,
+        analysis_date_to: Optional[date] = None,
+    ) -> Dict[str, Any]:
+        """Return month-by-month aggregated backtest metrics for trend visualization.
+
+        Each point contains win/loss/neutral counts, win_rate_pct, direction_accuracy_pct,
+        and avg_simulated_return_pct for the given eval_window_days.
+        """
+        config = get_config()
+        window = int(eval_window_days) if eval_window_days is not None else int(getattr(config, "backtest_eval_window_days", 10))
+        engine_version = str(getattr(config, "backtest_engine_version", "v1"))
+
+        rows = self.repo.get_monthly_stats(
+            eval_window_days=window,
+            engine_version=engine_version,
+            code=code,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
+        )
+
+        points = []
+        for row in rows:
+            win = row["win_count"]
+            loss = row["loss_count"]
+            decidable = win + loss
+            win_rate_pct = round(100.0 * win / decidable, 2) if decidable > 0 else None
+            direction_accuracy_pct = (
+                round(row["direction_accuracy"] * 100.0, 2)
+                if row["direction_accuracy"] is not None
+                else None
+            )
+            avg_sim = (
+                round(row["avg_simulated_return_pct"], 4)
+                if row["avg_simulated_return_pct"] is not None
+                else None
+            )
+            points.append({
+                "month": row["month"],
+                "win_count": win,
+                "loss_count": loss,
+                "neutral_count": row["neutral_count"],
+                "total_completed": row["total_completed"],
+                "win_rate_pct": win_rate_pct,
+                "direction_accuracy_pct": direction_accuracy_pct,
+                "avg_simulated_return_pct": avg_sim,
+            })
+
+        return {"points": points, "eval_window_days": window}
+
     def get_skill_summary(self, skill_id: str, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Return skill-like summary metrics for Agent memory consumers.
 

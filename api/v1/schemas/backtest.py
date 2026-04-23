@@ -95,3 +95,19 @@ class PerformanceMetrics(BaseModel):
 
     advice_breakdown: Dict[str, Any] = Field(default_factory=dict)
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TimelinePoint(BaseModel):
+    month: str
+    win_count: int
+    loss_count: int
+    neutral_count: int
+    total_completed: int
+    win_rate_pct: Optional[float] = None
+    direction_accuracy_pct: Optional[float] = None
+    avg_simulated_return_pct: Optional[float] = None
+
+
+class TimelineResponse(BaseModel):
+    points: List[TimelinePoint]
+    eval_window_days: int

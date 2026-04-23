@@ -11,7 +11,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
-from sqlalchemy import and_, delete, desc, func, select
+from sqlalchemy import and_, case, delete, desc, func, select
 
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager, AnalysisHistory
 
@@ -319,6 +319,66 @@ class BacktestRepository:
                 .order_by(BacktestResult.eval_window_days)
             ).scalars().all()
             return [int(w) for w in rows if w is not None]
+
+    def get_monthly_stats(
+        self,
+        *,
+        eval_window_days: int,
+        engine_version: str = "v1",
+        code: Optional[str] = None,
+        analysis_date_from: Optional[date] = None,
+        analysis_date_to: Optional[date] = None,
+    ) -> List[dict]:
+        """Aggregate completed BacktestResult rows by calendar month.
+
+        Returns a list of dicts sorted ascending by month, containing counts and
+        averages that the service layer uses to build TimelinePoint objects.
+        """
+        with self.db.get_session() as session:
+            conditions = [
+                BacktestResult.eval_status == "completed",
+                BacktestResult.eval_window_days == eval_window_days,
+                BacktestResult.engine_version == engine_version,
+            ]
+            if code:
+                conditions.append(BacktestResult.code == code)
+            if analysis_date_from is not None:
+                conditions.append(BacktestResult.analysis_date >= analysis_date_from)
+            if analysis_date_to is not None:
+                conditions.append(BacktestResult.analysis_date <= analysis_date_to)
+
+            month_col = func.strftime("%Y-%m", BacktestResult.analysis_date).label("month")
+
+            rows = session.execute(
+                select(
+                    month_col,
+                    func.sum(case((BacktestResult.outcome == "win", 1), else_=0)).label("win_count"),
+                    func.sum(case((BacktestResult.outcome == "loss", 1), else_=0)).label("loss_count"),
+                    func.sum(case((BacktestResult.outcome == "neutral", 1), else_=0)).label("neutral_count"),
+                    func.count(BacktestResult.id).label("total_completed"),
+                    func.avg(BacktestResult.simulated_return_pct).label("avg_simulated_return_pct"),
+                    func.avg(
+                        case((BacktestResult.direction_correct == True, 1.0), else_=0.0)  # noqa: E712
+                    ).label("direction_accuracy"),
+                )
+                .where(and_(*conditions))
+                .group_by(month_col)
+                .order_by(month_col)
+            ).all()
+
+            return [
+                {
+                    "month": row.month,
+                    "win_count": int(row.win_count or 0),
+                    "loss_count": int(row.loss_count or 0),
+                    "neutral_count": int(row.neutral_count or 0),
+                    "total_completed": int(row.total_completed or 0),
+                    "avg_simulated_return_pct": float(row.avg_simulated_return_pct) if row.avg_simulated_return_pct is not None else None,
+                    "direction_accuracy": float(row.direction_accuracy) if row.direction_accuracy is not None else None,
+                }
+                for row in rows
+                if row.month is not None
+            ]
 
     @staticmethod
     def _build_result_conditions(

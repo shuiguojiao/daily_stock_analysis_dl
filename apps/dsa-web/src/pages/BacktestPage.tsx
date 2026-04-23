@@ -5,10 +5,12 @@ import { backtestApi } from '../api/backtest';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import { ApiErrorAlert, Card, Badge, EmptyState, Pagination, StatusDot, Tooltip } from '../components/common';
+import BacktestCharts from '../components/backtest/BacktestCharts';
 import type {
   BacktestResultItem,
   BacktestRunResponse,
   PerformanceMetrics,
+  TimelinePoint,
 } from '../types/backtest';
 
 const BACKTEST_INPUT_CLASS =
@@ -190,6 +192,10 @@ const BacktestPage: React.FC = () => {
   const isNextDayValidation = effectiveWindowDays === 1;
   const showNextDayActualColumns = isNextDayValidation;
 
+  // Timeline state
+  const [timeline, setTimeline] = useState<TimelinePoint[]>([]);
+  const [showCharts, setShowCharts] = useState(true);
+
   // Fetch results
   const fetchResults = useCallback(async (
     page = 1,
@@ -255,6 +261,26 @@ const BacktestPage: React.FC = () => {
     }
   }, []);
 
+  // Fetch timeline
+  const fetchTimeline = useCallback(async (
+    code?: string,
+    windowDays?: number,
+    startDate?: string,
+    endDate?: string,
+  ) => {
+    try {
+      const data = await backtestApi.getTimeline({
+        code: code || undefined,
+        evalWindowDays: windowDays,
+        analysisDateFrom: startDate || undefined,
+        analysisDateTo: endDate || undefined,
+      });
+      setTimeline(data.points);
+    } catch (err) {
+      console.error('Failed to fetch timeline:', err);
+    }
+  }, []);
+
   // Initial load — fetch performance first, then filter results by its window
   useEffect(() => {
     const init = async () => {
@@ -267,6 +293,7 @@ const BacktestPage: React.FC = () => {
         setEvalDays(String(windowDays));
       }
       fetchResults(1, undefined, windowDays, undefined, undefined);
+      fetchTimeline(undefined, windowDays, undefined, undefined);
     };
     init();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -287,8 +314,10 @@ const BacktestPage: React.FC = () => {
       });
       setRunResult(response);
       // Refresh data with same eval_window_days
-      fetchResults(1, codeFilter.trim() || undefined, evalWindowDays, analysisDateFrom, analysisDateTo);
-      fetchPerformance(codeFilter.trim() || undefined, evalWindowDays, analysisDateFrom, analysisDateTo);
+      const activeCode = codeFilter.trim() || undefined;
+      fetchResults(1, activeCode, evalWindowDays, analysisDateFrom, analysisDateTo);
+      fetchPerformance(activeCode, evalWindowDays, analysisDateFrom, analysisDateTo);
+      fetchTimeline(activeCode, evalWindowDays, analysisDateFrom, analysisDateTo);
     } catch (err) {
       setRunError(getParsedApiError(err));
     } finally {
@@ -303,6 +332,7 @@ const BacktestPage: React.FC = () => {
     setCurrentPage(1);
     fetchResults(1, code, windowDays, analysisDateFrom, analysisDateTo);
     fetchPerformance(code, windowDays, analysisDateFrom, analysisDateTo);
+    fetchTimeline(code, windowDays, analysisDateFrom, analysisDateTo);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -317,6 +347,7 @@ const BacktestPage: React.FC = () => {
     setCurrentPage(1);
     fetchResults(1, code, 1, analysisDateFrom, analysisDateTo);
     fetchPerformance(code, 1, analysisDateFrom, analysisDateTo);
+    fetchTimeline(code, 1, analysisDateFrom, analysisDateTo);
   };
 
   // Pagination
@@ -462,11 +493,40 @@ const BacktestPage: React.FC = () => {
           )}
         </div>
 
-        {/* Right content - Results table */}
+        {/* Right content - Charts + Results table */}
         <section className="min-h-0 flex-1 overflow-y-auto">
           {pageError ? (
             <ApiErrorAlert error={pageError} className="mb-3" />
           ) : null}
+
+          {/* Charts section */}
+          {(overallPerf || results.length > 0 || timeline.length > 0) && (
+            <div className="mb-3">
+              <button
+                type="button"
+                onClick={() => setShowCharts((v) => !v)}
+                className="mb-2 flex items-center gap-1.5 text-xs text-muted-text hover:text-secondary-text transition-colors"
+              >
+                <svg
+                  className={`h-3.5 w-3.5 transition-transform ${showCharts ? 'rotate-90' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                {showCharts ? 'Hide charts' : 'Show charts'}
+              </button>
+              {showCharts && (
+                <BacktestCharts
+                  overallPerf={overallPerf}
+                  results={results}
+                  timeline={timeline}
+                />
+              )}
+            </div>
+          )}
+
           {isLoadingResults ? (
             <div className="flex flex-col items-center justify-center h-64">
               <div className="backtest-spinner md" />

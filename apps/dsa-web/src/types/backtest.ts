@@ -97,3 +97,21 @@ export interface PerformanceMetrics {
   adviceBreakdown: Record<string, unknown>;
   diagnostics: Record<string, unknown>;
 }
+
+// ============ Timeline ============
+
+export interface TimelinePoint {
+  month: string;
+  winCount: number;
+  lossCount: number;
+  neutralCount: number;
+  totalCompleted: number;
+  winRatePct: number | null;
+  directionAccuracyPct: number | null;
+  avgSimulatedReturnPct: number | null;
+}
+
+export interface TimelineResponse {
+  points: TimelinePoint[];
+  evalWindowDays: number;
+}

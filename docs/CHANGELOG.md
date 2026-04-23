@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] 修复 Windows 桌面端转抄后端 stdout/stderr 时中文日志可能乱码的问题，统一优先使用 UTF-8 并兼容本地代码页回退
 - [改进] Docker 发布工作流收敛为更清晰的正式发布与手动补发链路，并统一官方 Docker Hub 镜像名为 `zhulinsen/daily_stock_analysis`
 - [文档] 补充官方镜像拉取、`docker run` 用法与 `.env` / 数据目录映射说明，不再仅覆盖 Compose 部署路径
+- [新功能] 回测页新增 4 张 Recharts 可视化图表：胜负分布饼图、收益分布直方图、月度胜率趋势折线图（含评估数量柱状叠加）、方向准确率 vs 胜率对比图
+- [新功能] 后端新增 `GET /api/v1/backtest/timeline` 端点，按自然月聚合 BacktestResult，返回每月胜率、方向准确率和平均模拟收益，供趋势图调用
 
 ## [3.13.0] - 2026-04-21
 

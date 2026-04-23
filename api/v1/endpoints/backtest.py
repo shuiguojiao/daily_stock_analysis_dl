@@ -16,6 +16,7 @@ from api.v1.schemas.backtest import (
     BacktestResultItem,
     BacktestResultsResponse,
     PerformanceMetrics,
+    TimelineResponse,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.services.backtest_service import BacktestService
@@ -163,6 +164,43 @@ def get_overall_performance(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"查询整体表现失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/timeline",
+    response_model=TimelineResponse,
+    responses={
+        200: {"description": "月度回测趋势数据"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取月度回测趋势",
+    description="按自然月聚合已完成的回测结果，返回胜率、方向准确率和平均模拟收益的月度走势",
+)
+def get_timeline(
+    eval_window_days: Optional[int] = Query(None, ge=1, le=120, description="评估窗口过滤"),
+    code: Optional[str] = Query(None, description="股票代码筛选"),
+    analysis_date_from: Optional[date] = Query(None, description="分析日期起始（含）"),
+    analysis_date_to: Optional[date] = Query(None, description="分析日期结束（含）"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> TimelineResponse:
+    try:
+        _validate_analysis_date_range(analysis_date_from, analysis_date_to)
+        service = BacktestService(db_manager)
+        data = service.get_monthly_timeline(
+            eval_window_days=eval_window_days,
+            code=code,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
+        )
+        return TimelineResponse(**data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"查询月度趋势失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询月度趋势失败: {str(exc)}"},
         )
 
 
