@@ -1,0 +1,4 @@
+interface:
+  display_name: "DSA Agent"
+  short_description: "Use the deployed Daily Stock Analysis API from agent workflows."
+  default_prompt: "Use $daily-stock-analysis-agent to analyze a stock, batch, or strategy question through DSA."
