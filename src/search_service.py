@@ -206,6 +206,16 @@ class BaseSearchProvider(ABC):
             error_count = self._key_errors[key]
         logger.warning(f"[{self._name}] API Key {key[:8]}... 错误计数: {error_count}")
     
+    def applicable_to_stock(self, stock_code: str) -> bool:
+        """Whether this provider can serve news for the given stock_code.
+
+        Default: True (e.g., generic web-search providers handle every
+        market). Override on market-specific providers (e.g., AkShare A-share)
+        so the dispatcher in ``search_stock_news`` can skip them for unrelated
+        symbols and avoid wasted attempts.
+        """
+        return True
+
     @abstractmethod
     def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
         """执行搜索（子类实现）"""
@@ -476,7 +486,16 @@ class SerpAPISearchProvider(BaseSearchProvider):
     def __init__(self, api_keys: List[str]):
         super().__init__(api_keys, "SerpAPI")
     
-    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+        hl: Optional[str] = None,
+        gl: Optional[str] = None,
+        google_domain: Optional[str] = None,
+    ) -> SearchResponse:
         """执行 SerpAPI 搜索"""
         try:
             from serpapi import GoogleSearch
@@ -488,7 +507,7 @@ class SerpAPISearchProvider(BaseSearchProvider):
                 success=False,
                 error_message="google-search-results 未安装，请运行: pip install google-search-results"
             )
-        
+
         try:
             # 确定时间范围参数 tbs
             tbs = "qdr:w"  # 默认一周
@@ -502,15 +521,16 @@ class SerpAPISearchProvider(BaseSearchProvider):
                 tbs = "qdr:y"  # 过去一年
 
             # 使用 Google 搜索 (获取 Knowledge Graph, Answer Box 等)
+            # 默认偏向中文/香港谷歌，调用方可按市场上下文覆盖。
             params = {
                 "engine": "google",
                 "q": query,
                 "api_key": api_key,
-                "google_domain": "google.com.hk", # 使用香港谷歌，中文支持较好
-                "hl": "zh-cn",  # 中文界面
-                "gl": "cn",     # 中国地区偏好
-                "tbs": tbs,     # 时间范围限制
-                "num": max_results # 请求的结果数量，注意：Google API有时不严格遵守
+                "google_domain": google_domain or "google.com.hk",
+                "hl": hl or "zh-cn",
+                "gl": gl or "cn",
+                "tbs": tbs,
+                "num": max_results,
             }
             
             search = GoogleSearch(params)
@@ -658,7 +678,34 @@ class SerpAPISearchProvider(BaseSearchProvider):
                 success=False,
                 error_message=error_msg
             )
-    
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        days: int = 7,
+        hl: Optional[str] = None,
+        gl: Optional[str] = None,
+        google_domain: Optional[str] = None,
+    ) -> SearchResponse:
+        """SerpAPI 搜索，支持调用方覆盖 Google 区域/语言偏好。"""
+        if hl is None and gl is None and google_domain is None:
+            return super().search(query, max_results=max_results, days=days)
+
+        extra: Dict[str, Any] = {}
+        if hl is not None:
+            extra["hl"] = hl
+        if gl is not None:
+            extra["gl"] = gl
+        if google_domain is not None:
+            extra["google_domain"] = google_domain
+        return self._execute_search(
+            query,
+            max_results=max_results,
+            days=days,
+            **extra,
+        )
+
     @staticmethod
     def _extract_domain(url: str) -> str:
         """从 URL 提取域名"""
@@ -1478,6 +1525,176 @@ class MiniMaxSearchProvider(BaseSearchProvider):
             return '未知来源'
 
 
+class AkShareNewsProvider(BaseSearchProvider):
+    """A-share 个股新闻数据源（基于 AkShare ``stock_news_em``，东方财富爬虫）。
+
+    专为 A 股设计：6 位数字代码命中时直接拿东财个股新闻流，结果天然 100%
+    相关、来源是国内财经媒体（财联社/界面/央广财经/证券时报等），无需依赖
+    通用搜索引擎对中文 A 股查询的弱召回。
+
+    特点：
+    - 不消耗外部搜索 API 配额
+    - 字段稳定：标题/正文摘要/发布时间/来源/链接齐全
+    - 局限：只支持 A 股 6 位代码；不支持 ``days`` 参数（由上层 freshness 过滤兜底）
+    """
+
+    _A_SHARE_CODE_RE = re.compile(r"\b(\d{6})\b")
+
+    def __init__(self, enabled: bool = True):
+        # No API keys needed; provider is gated by AkShare import + enabled flag.
+        super().__init__([], "AkShareNews")
+        self._enabled = bool(enabled)
+        self._import_failed = False
+
+    @property
+    def is_available(self) -> bool:
+        if not self._enabled or self._import_failed:
+            return False
+        try:
+            import akshare  # noqa: F401
+        except Exception as e:  # pragma: no cover - environment-specific
+            logger.warning(f"[AkShareNews] akshare 不可用，已禁用: {e}")
+            self._import_failed = True
+            return False
+        return True
+
+    def applicable_to_stock(self, stock_code: str) -> bool:
+        # A 股标志：后缀 .SH 或 .SZ；无后缀时退回 6 位纯数字兜底
+        code = (stock_code or "").strip().upper()
+        if "." in code:
+            return code.endswith(".SH") or code.endswith(".SZ")
+        return code.isdigit() and len(code) == 6
+
+    @staticmethod
+    def _extract_a_share_code(query: str, fallback: Optional[str] = None) -> Optional[str]:
+        """Pull a 6-digit A-share code from the call context (kwarg or query)."""
+        if fallback:
+            bare = fallback.strip().split(".")[0]
+            if bare.isdigit() and len(bare) == 6:
+                return bare
+        if not query:
+            return None
+        match = AkShareNewsProvider._A_SHARE_CODE_RE.search(query)
+        return match.group(1) if match else None
+
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,  # unused; required by BaseSearchProvider signature
+        max_results: int,
+        days: int = 7,
+        stock_code: Optional[str] = None,
+    ) -> SearchResponse:
+        code = self._extract_a_share_code(query, fallback=stock_code)
+        if not code:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="AkShareNews 仅支持 A 股 6 位代码",
+            )
+
+        try:
+            import akshare as ak
+        except Exception as e:  # pragma: no cover - guarded by is_available
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"akshare 导入失败: {e}",
+            )
+
+        try:
+            df = ak.stock_news_em(symbol=code)
+        except Exception as e:
+            logger.warning(f"[AkShareNews] stock_news_em({code}) 失败: {e}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"AkShare 调用失败: {e}",
+            )
+
+        if df is None or len(df) == 0:
+            logger.info(f"[AkShareNews] {code} 无个股新闻")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=True,
+            )
+
+        results: List[SearchResult] = []
+        for _, row in df.head(max_results).iterrows():
+            title = str(row.get("新闻标题") or "").strip()
+            content = str(row.get("新闻内容") or "").strip()
+            url = str(row.get("新闻链接") or "").strip()
+            source = str(row.get("文章来源") or "").strip() or "东方财富"
+            published_raw = str(row.get("发布时间") or "").strip()
+            # 发布时间形如 "2026-04-25 10:15:22"；取前 10 位作为日期
+            published_date = published_raw[:10] if len(published_raw) >= 10 else None
+
+            if not title or not url:
+                continue
+
+            results.append(
+                SearchResult(
+                    title=title,
+                    snippet=content[:500],
+                    url=url,
+                    source=source,
+                    published_date=published_date,
+                )
+            )
+
+        logger.info(f"[AkShareNews] {code} 解析 {len(results)} 条个股新闻")
+        return SearchResponse(
+            query=query,
+            results=results,
+            provider=self.name,
+            success=True,
+        )
+
+    def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        days: int = 7,
+        stock_code: Optional[str] = None,
+    ) -> SearchResponse:
+        """AkShare 搜索：跳过 BaseSearchProvider 的 API key 校验。"""
+        start_time = time.time()
+        try:
+            response = self._do_search(
+                query,
+                api_key="",  # unused
+                max_results=max_results,
+                days=days,
+                stock_code=stock_code,
+            )
+            response.search_time = time.time() - start_time
+            if response.success:
+                logger.info(
+                    f"[{self._name}] 搜索成功，返回 {len(response.results)} 条结果，"
+                    f"耗时 {response.search_time:.2f}s"
+                )
+            return response
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(f"[{self._name}] 搜索异常: {e}")
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self._name,
+                success=False,
+                error_message=str(e),
+                search_time=elapsed,
+            )
+
+
 class BraveSearchProvider(BaseSearchProvider):
     """
     Brave Search 搜索引擎
@@ -2116,6 +2333,15 @@ class SearchService:
     FUTURE_TOLERANCE_DAYS = 1
     _CHINESE_TEXT_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
     _US_STOCK_RE = re.compile(r"^[A-Za-z]{1,5}(\.[A-Za-z])?$")
+    # A \u80a1\u591a\u7ef4\u5ea6\u60c5\u62a5\u641c\u7d22\uff1a\u5404\u7ef4\u5ea6\u547d\u4e2d\u5173\u952e\u8bcd\uff0c\u7528\u4e8e\u4ece AKShare \u65b0\u95fb\u6c60\u91cc\u5206\u62e3\u3002
+    # latest_news \u4e0d\u8bbe\u5173\u952e\u8bcd\uff0c\u76f4\u63a5\u53d6\u6700\u65b0 N \u6761\u3002
+    _AKSHARE_DIM_KEYWORDS: Dict[str, List[str]] = {
+        "risk_check":     ["\u51cf\u6301", "\u5904\u7f5a", "\u8fdd\u89c4", "\u8bc9\u8bbc", "\u5229\u7a7a", "\u98ce\u9669", "\u8b66\u793a", "\u7f5a\u6b3e", "\u7acb\u6848", "\u76d1\u7ba1"],
+        "announcements":  ["\u516c\u544a", "\u4e0a\u4ea4\u6240", "\u6df1\u4ea4\u6240", "\u62ab\u9732", "\u91cd\u5927", "\u8463\u4e8b\u4f1a", "\u80a1\u4e1c\u5927\u4f1a", "\u5b9a\u671f\u62a5\u544a"],
+        "earnings":       ["\u4e1a\u7ee9", "\u8d22\u62a5", "\u8425\u6536", "\u51c0\u5229\u6da6", "\u589e\u957f", "\u9884\u544a", "\u5feb\u62a5", "\u5b63\u62a5", "\u5e74\u62a5", "\u6536\u5165"],
+        "market_analysis":["\u7814\u62a5", "\u76ee\u6807\u4ef7", "\u8bc4\u7ea7", "\u5206\u6790\u5e08", "\u673a\u6784", "\u63a8\u8350", "\u4e70\u5165", "\u589e\u6301"],
+        "industry":       ["\u884c\u4e1a", "\u7ade\u4e89", "\u5e02\u573a\u4efd\u989d", "\u4ea7\u4e1a", "\u8d5b\u9053", "\u677f\u5757"],
+    }
 
     def __init__(
         self,
@@ -2129,6 +2355,7 @@ class SearchService:
         searxng_public_instances_enabled: bool = True,
         news_max_age_days: int = 3,
         news_strategy_profile: str = "short",
+        news_akshare_enabled: bool = False,
     ):
         """
         初始化搜索服务
@@ -2205,7 +2432,17 @@ class SearchService:
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
-            
+
+        # 8. AkShare 个股新闻（A 股专用，置于队首使其在 A 股场景下被最先尝试）
+        self._news_akshare_enabled = bool(news_akshare_enabled)
+        if self._news_akshare_enabled:
+            akshare_provider = AkShareNewsProvider(enabled=True)
+            if akshare_provider.is_available:
+                self._providers.insert(0, akshare_provider)
+                logger.info("已启用 AkShare 个股新闻 provider（A 股专用，置队首）")
+            else:
+                logger.info("AkShare 个股新闻 provider 不可用，已跳过")
+
         if not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
 
@@ -2324,18 +2561,214 @@ class SearchService:
         return len(candidate.results) > len(best_response.results)
 
     @classmethod
+    def _resolve_market_locale(
+        cls,
+        stock_code: str,
+        *,
+        prefer_chinese: bool,
+    ) -> Dict[str, str]:
+        """Resolve a canonical locale hint dict for the symbol's likely market.
+
+        Returns keys that can be projected to provider-specific params:
+        - ``country``: ISO-2 country code (CN/HK/US)
+        - ``brave_search_lang``: Brave-style language tag (zh-hans/zh-hant/en)
+        - ``google_hl`` / ``google_gl`` / ``google_domain``: Google-style hints
+        """
+        code = (stock_code or "").strip()
+
+        if prefer_chinese:
+            return {
+                "country": "CN",
+                "brave_search_lang": "zh-hans",
+                "google_hl": "zh-cn",
+                "google_gl": "cn",
+                "google_domain": "google.com.hk",
+            }
+
+        # HK stocks: hkXXXXX prefix or 5-digit numeric (legacy 4-digit too)
+        lower = code.lower()
+        if lower.startswith("hk") or (code.isdigit() and len(code) in (4, 5)):
+            return {
+                "country": "HK",
+                "brave_search_lang": "zh-hant",
+                "google_hl": "zh-tw",
+                "google_gl": "hk",
+                "google_domain": "google.com.hk",
+            }
+
+        if cls._is_us_stock(code):
+            return {
+                "country": "US",
+                "brave_search_lang": "en",
+                "google_hl": "en",
+                "google_gl": "us",
+                "google_domain": "google.com",
+            }
+
+        return {}
+
+    @classmethod
     def _brave_search_locale(
         cls,
         stock_code: str,
         *,
         prefer_chinese: bool,
     ) -> Dict[str, str]:
-        """Resolve Brave locale hints without forcing US bias onto non-US symbols."""
-        if prefer_chinese:
-            return {"search_lang": "zh-hans", "country": "CN"}
-        if cls._is_us_stock(stock_code):
-            return {"search_lang": "en", "country": "US"}
-        return {}
+        """Resolve Brave locale hints (back-compat shim around the unified resolver)."""
+        locale = cls._resolve_market_locale(stock_code, prefer_chinese=prefer_chinese)
+        out: Dict[str, str] = {}
+        if locale.get("brave_search_lang"):
+            out["search_lang"] = locale["brave_search_lang"]
+        if locale.get("country"):
+            out["country"] = locale["country"]
+        return out
+
+    @classmethod
+    def _serpapi_search_locale(
+        cls,
+        stock_code: str,
+        *,
+        prefer_chinese: bool,
+    ) -> Dict[str, str]:
+        """Resolve SerpAPI/Google locale hints (gl/hl/google_domain)."""
+        locale = cls._resolve_market_locale(stock_code, prefer_chinese=prefer_chinese)
+        out: Dict[str, str] = {}
+        if locale.get("google_hl"):
+            out["hl"] = locale["google_hl"]
+        if locale.get("google_gl"):
+            out["gl"] = locale["google_gl"]
+        if locale.get("google_domain"):
+            out["google_domain"] = locale["google_domain"]
+        return out
+
+    # --- News relevance filtering ---------------------------------------------
+
+    _RELEVANCE_TOKEN_SPLIT_RE = re.compile(r"[^\w一-鿿]+")
+
+    @classmethod
+    def _stock_name_relevance_tokens(cls, stock_name: str) -> List[str]:
+        """Build relevance-match tokens from a stock name (full + sub-tokens)."""
+        name = (stock_name or "").strip()
+        if not name:
+            return []
+        tokens: List[str] = []
+        seen: set = set()
+
+        def _add(token: str) -> None:
+            t = token.lower().strip()
+            if not t or t in seen:
+                return
+            seen.add(t)
+            tokens.append(t)
+
+        _add(name)
+        for piece in cls._RELEVANCE_TOKEN_SPLIT_RE.split(name):
+            if not piece:
+                continue
+            # Keep CJK sub-pieces of any length, but require >=3 chars for ASCII
+            # to avoid matching short English fragments like "co" or "in".
+            if cls._contains_chinese_text(piece):
+                _add(piece)
+            elif len(piece) >= 3:
+                _add(piece)
+        return tokens
+
+    @classmethod
+    def _stock_code_relevance_tokens(cls, stock_code: str) -> List[str]:
+        """Build relevance-match tokens for a stock code (incl. common variants)."""
+        code = (stock_code or "").strip()
+        if not code:
+            return []
+        tokens: List[str] = []
+        seen: set = set()
+
+        def _add(token: str) -> None:
+            t = (token or "").lower().strip()
+            if not t or t in seen:
+                return
+            seen.add(t)
+            tokens.append(t)
+
+        _add(code)
+
+        # A-share 6-digit
+        if code.isdigit() and len(code) == 6:
+            _add(code)
+            return tokens
+
+        # HK with hk prefix
+        lower = code.lower()
+        if lower.startswith("hk"):
+            digits_raw = code[2:]
+            digits = digits_raw.lstrip("0") or "0"
+            for variant in (
+                digits_raw,
+                digits,
+                digits_raw.zfill(4),
+                digits_raw.zfill(5),
+                f"{digits}.hk",
+                f"{digits_raw.zfill(4)}.hk",
+                f"hk{digits_raw.zfill(5)}",
+            ):
+                _add(variant)
+            return tokens
+
+        # HK without prefix (4 or 5 digit numeric)
+        if code.isdigit() and len(code) in (4, 5):
+            digits = code.lstrip("0") or "0"
+            for variant in (
+                code,
+                digits,
+                code.zfill(5),
+                f"{digits}.hk",
+                f"{code.zfill(4)}.hk",
+            ):
+                _add(variant)
+            return tokens
+
+        # US ticker (allow with/without dot, e.g. BRK.B / BRKB)
+        if cls._is_us_stock(code):
+            _add(code)
+            _add(code.replace(".", ""))
+        return tokens
+
+    @classmethod
+    def _passes_news_relevance(
+        cls,
+        item: SearchResult,
+        *,
+        stock_code: str,
+        stock_name: str,
+        focus_keywords: Optional[List[str]] = None,
+    ) -> bool:
+        """Return True if title/snippet/source/url likely references the stock.
+
+        Conservative substring match: passes if any of the stock_code variants,
+        stock_name (or its sub-tokens), or focus keywords are present in the
+        combined haystack. Falls back to True when no signal tokens are
+        available (e.g., empty inputs) so we don't drop everything.
+        """
+        haystack = " ".join(
+            filter(
+                None,
+                [item.title or "", item.snippet or "", item.source or "", item.url or ""],
+            )
+        ).lower()
+        if not haystack:
+            return False
+
+        needles: List[str] = []
+        needles.extend(cls._stock_code_relevance_tokens(stock_code))
+        needles.extend(cls._stock_name_relevance_tokens(stock_name))
+        for kw in focus_keywords or []:
+            kw_lower = (kw or "").strip().lower()
+            if len(kw_lower) >= 2:
+                needles.append(kw_lower)
+
+        if not needles:
+            return True
+
+        return any(n and n in haystack for n in needles)
 
     # A-share ETF code prefixes (Shanghai 51/52/56/58, Shenzhen 15/16/18)
     _A_ETF_PREFIXES = ('51', '52', '56', '58', '15', '16', '18')
@@ -2594,8 +3027,17 @@ class SearchService:
         search_days: int,
         max_results: int,
         log_scope: str,
+        stock_code: Optional[str] = None,
+        stock_name: Optional[str] = None,
+        focus_keywords: Optional[List[str]] = None,
     ) -> SearchResponse:
-        """Hard-filter results by published_date recency and normalize date strings."""
+        """Filter results by published_date recency and stock relevance.
+
+        When ``stock_code`` or ``stock_name`` is provided, an additional
+        relevance gate checks that the title/snippet/source/url references
+        the stock — preventing generic "stock latest news" results (e.g.,
+        unrelated foreign-market headlines) from leaking through.
+        """
         if not response.success or not response.results:
             return response
 
@@ -2603,10 +3045,16 @@ class SearchService:
         earliest = today - timedelta(days=max(0, int(search_days) - 1))
         latest = today + timedelta(days=self.FUTURE_TOLERANCE_DAYS)
 
+        relevance_enabled = bool(
+            (stock_code and stock_code.strip())
+            or (stock_name and stock_name.strip())
+        )
+
         filtered: List[SearchResult] = []
         dropped_unknown = 0
         dropped_old = 0
         dropped_future = 0
+        dropped_irrelevant = 0
 
         for item in response.results:
             published = self._normalize_news_publish_date(item.published_date)
@@ -2618,6 +3066,15 @@ class SearchService:
                 continue
             if published > latest:
                 dropped_future += 1
+                continue
+
+            if relevance_enabled and not self._passes_news_relevance(
+                item,
+                stock_code=stock_code or "",
+                stock_name=stock_name or "",
+                focus_keywords=focus_keywords,
+            ):
+                dropped_irrelevant += 1
                 continue
 
             filtered.append(
@@ -2632,9 +3089,10 @@ class SearchService:
             if len(filtered) >= max_results:
                 break
 
-        if dropped_unknown or dropped_old or dropped_future:
+        if dropped_unknown or dropped_old or dropped_future or dropped_irrelevant:
             logger.info(
-                "[新闻过滤] %s: provider=%s, total=%s, kept=%s, drop_unknown=%s, drop_old=%s, drop_future=%s, window=[%s,%s]",
+                "[新闻过滤] %s: provider=%s, total=%s, kept=%s, drop_unknown=%s, drop_old=%s, "
+                "drop_future=%s, drop_irrelevant=%s, window=[%s,%s]",
                 log_scope,
                 response.provider,
                 len(response.results),
@@ -2642,6 +3100,7 @@ class SearchService:
                 dropped_unknown,
                 dropped_old,
                 dropped_future,
+                dropped_irrelevant,
                 earliest.isoformat(),
                 latest.isoformat(),
             )
@@ -2800,13 +3259,28 @@ class SearchService:
             for provider in self._providers:
                 if not provider.is_available:
                     continue
+                # 市场路由：跳过对当前股票不适用的 provider（例如 A 股专用
+                # AkShare 不应被用于港美股）。SimpleNamespace 类型的测试假
+                # provider 没有该方法，默认按"通用"处理。
+                applicable = getattr(provider, "applicable_to_stock", None)
+                if callable(applicable) and not applicable(stock_code):
+                    continue
 
                 search_kwargs: Dict[str, Any] = {}
-                if isinstance(provider, TavilySearchProvider):
+                if isinstance(provider, AkShareNewsProvider):
+                    search_kwargs["stock_code"] = stock_code
+                elif isinstance(provider, TavilySearchProvider):
                     search_kwargs["topic"] = "news"
                 elif isinstance(provider, BraveSearchProvider):
                     search_kwargs.update(
                         self._brave_search_locale(
+                            stock_code,
+                            prefer_chinese=prefer_chinese,
+                        )
+                    )
+                elif isinstance(provider, SerpAPISearchProvider):
+                    search_kwargs.update(
+                        self._serpapi_search_locale(
                             stock_code,
                             prefer_chinese=prefer_chinese,
                         )
@@ -2818,6 +3292,9 @@ class SearchService:
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{stock_code}:{provider.name}:stock_news",
+                    stock_code=stock_code,
+                    stock_name=stock_name,
+                    focus_keywords=focus_keywords,
                 )
                 had_provider_success = had_provider_success or bool(response.success)
 
@@ -2953,6 +3430,52 @@ class SearchService:
             error_message="事件搜索失败"
         )
     
+    def _distribute_akshare_news_pool(
+        self,
+        pool: List[SearchResult],
+        search_dimensions: List[dict],
+        target_per_dimension: int,
+        search_days: int,
+        stock_code: str,
+        stock_name: str,
+    ) -> Dict[str, SearchResponse]:
+        """从 AKShare 新闻池按维度关键词分拣结果。
+
+        latest_news 不设关键词，直接取时间最新的 N 条；其他维度按
+        _AKSHARE_DIM_KEYWORDS 匹配标题/正文；strict_freshness 维度
+        复用 _filter_news_response 做时效过滤。
+        """
+        distributed: Dict[str, SearchResponse] = {}
+        for dim in search_dimensions:
+            dim_name = dim["name"]
+            keywords = self._AKSHARE_DIM_KEYWORDS.get(dim_name, [])
+            if keywords:
+                matched = [
+                    r for r in pool
+                    if any(kw in (r.title or "") or kw in (r.snippet or "") for kw in keywords)
+                ]
+            else:
+                matched = list(pool)
+
+            fake = SearchResponse(
+                query=dim["query"],
+                results=matched,
+                provider="AkShareNews",
+                success=True,
+            )
+            if dim.get("strict_freshness"):
+                distributed[dim_name] = self._filter_news_response(
+                    fake,
+                    search_days=search_days,
+                    max_results=target_per_dimension,
+                    log_scope=f"{stock_code}:AkShareNews:{dim_name}",
+                )
+            else:
+                distributed[dim_name] = self._normalize_and_limit_response(
+                    fake, max_results=target_per_dimension
+                )
+        return distributed
+
     def search_comprehensive_intel(
         self,
         stock_code: str,
@@ -3103,22 +3626,87 @@ class SearchService:
             target_per_dimension,
             provider_max_results,
         )
-        
-        # 轮流使用不同的搜索引擎
+
+        # --- A 股 AKShare 优先路由 ---
+        # 先拉一次全量个股新闻，按关键词分发到各维度；
+        # 无匹配结果的维度再退回 round-robin 关键词搜索。
+        # AkShareNewsProvider 不支持关键词搜索，始终排除在 round-robin 之外。
+        akshare_covered: Dict[str, SearchResponse] = {}
+        if not is_foreign:
+            ak_provider = next(
+                (
+                    p for p in self._providers
+                    if isinstance(p, AkShareNewsProvider)
+                    and p.is_available
+                    and p.applicable_to_stock(stock_code)
+                ),
+                None,
+            )
+            if ak_provider is not None:
+                pool_size = len(search_dimensions) * target_per_dimension + 10
+                logger.info(
+                    "[情报搜索] A 股 %s 启用 AKShare 优先路由，拉取新闻池 (max=%s)",
+                    stock_code,
+                    pool_size,
+                )
+                ak_raw = ak_provider.search(
+                    f"{stock_name} {stock_code}",
+                    max_results=pool_size,
+                    stock_code=stock_code,
+                )
+                if ak_raw.success and ak_raw.results:
+                    akshare_covered = self._distribute_akshare_news_pool(
+                        ak_raw.results,
+                        search_dimensions,
+                        target_per_dimension,
+                        search_days,
+                        stock_code=stock_code,
+                        stock_name=stock_name,
+                    )
+                    covered_count = sum(
+                        1 for r in akshare_covered.values() if r.results
+                    )
+                    logger.info(
+                        "[情报搜索] AKShare 新闻池: 总=%s条, 覆盖维度=%s/%s",
+                        len(ak_raw.results),
+                        covered_count,
+                        len(search_dimensions),
+                    )
+                else:
+                    logger.info("[情报搜索] AKShare 无结果，全部维度退回 round-robin")
+
+        # round-robin（排除 AkShareNewsProvider，它已在上方单独处理）
         provider_index = 0
-        
+
         for dim in search_dimensions:
             if search_count >= max_searches:
                 break
-            
-            # 选择搜索引擎（轮流使用）
-            available_providers = [p for p in self._providers if p.is_available]
+
+            dim_name = dim["name"]
+
+            # AKShare 已覆盖该维度且有结果 → 直接使用，不消耗 search_count 配额
+            ak_dim = akshare_covered.get(dim_name)
+            if ak_dim is not None and ak_dim.results:
+                results[dim_name] = ak_dim
+                search_count += 1
+                logger.info(
+                    "[情报搜索] %s: 使用 AKShare 新闻池 (%s条)",
+                    dim["desc"],
+                    len(ak_dim.results),
+                )
+                continue
+
+            # 退回到关键词搜索引擎
+            available_providers = [
+                p for p in self._providers
+                if p.is_available and not isinstance(p, AkShareNewsProvider)
+            ]
             if not available_providers:
                 break
-            
+
             provider = available_providers[provider_index % len(available_providers)]
             provider_index += 1
-            
+
             logger.info(f"[情报搜索] {dim['desc']}: 使用 {provider.name}")
 
             if isinstance(provider, TavilySearchProvider) and dim.get('tavily_topic'):
@@ -3139,16 +3727,16 @@ class SearchService:
                     response,
                     search_days=search_days,
                     max_results=target_per_dimension,
-                    log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
+                    log_scope=f"{stock_code}:{provider.name}:{dim_name}",
                 )
             else:
                 filtered_response = self._normalize_and_limit_response(
                     response,
                     max_results=target_per_dimension,
                 )
-            results[dim['name']] = filtered_response
+            results[dim_name] = filtered_response
             search_count += 1
-            
+
             if response.success:
                 logger.info(
                     "[情报搜索] %s: 原始=%s条, 过滤后=%s条",
@@ -3158,10 +3746,10 @@ class SearchService:
                 )
             else:
                 logger.warning(f"[情报搜索] {dim['desc']}: 搜索失败 - {response.error_message}")
-            
+
             # 短暂延迟避免请求过快
             time.sleep(0.5)
-        
+
         return results
     
     def format_intel_report(self, intel_results: Dict[str, SearchResponse], stock_name: str) -> str:
@@ -3446,6 +4034,7 @@ def get_search_service() -> SearchService:
                     searxng_public_instances_enabled=config.searxng_public_instances_enabled,
                     news_max_age_days=config.news_max_age_days,
                     news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
+                    news_akshare_enabled=getattr(config, "news_akshare_enabled", True),
                 )
     
     return _search_service

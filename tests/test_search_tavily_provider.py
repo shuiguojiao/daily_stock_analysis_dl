@@ -133,9 +133,9 @@ class TestTavilySearchProvider(unittest.TestCase):
                     {
                         "results": [
                             {
-                                "title": f"Fresh article via {field_name}",
-                                "url": "https://example.com/fresh-article",
-                                "content": "Fresh coverage",
+                                "title": f"BABA 阿里巴巴 fresh article via {field_name}",
+                                "url": "https://example.com/baba-fresh-article",
+                                "content": "Fresh BABA 阿里巴巴 coverage",
                                 field_name: published_text,
                             }
                         ]

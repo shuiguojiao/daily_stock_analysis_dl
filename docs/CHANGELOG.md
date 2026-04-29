@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 
+- [修复] 相关资讯过滤掉无关市场新闻 — 新闻搜索结果新增"标题/摘要/来源/URL 必须命中股票代码或名称"的相关性硬过滤，并把港股/美股的区域语言提示扩展到 SerpAPI、Brave 全链路（HK→zh-hant/HK，US→en/US，A 股→zh-hans/CN），避免出现 tradebrains.in 这类印度财经站结果被回填到首页相关资讯。
+- [新功能] A 股个股新闻新增 AkShare 优先链路 — 新增 `AkShareNewsProvider`（基于 `ak.stock_news_em` 东方财富爬虫），对 6 位 A 股代码自动置于队首并跳过通用搜索引擎，结果天然 100% 相关、不消耗 Tavily/Brave/SerpAPI 配额；港美股自动绕过该 provider 走原有链路。可通过 `NEWS_AKSHARE_ENABLED=false` 关闭。
+- [改进] LLM prompt 新增 RSI(6/12/24)、MACD(DIF/DEA/柱) 独立区块及所属板块，修复 MA 均线数值精度过多小数问题
+- [修复] A 股多维度情报搜索（`search_comprehensive_intel`）英文新闻问题 — 原 round-robin 未对 A 股做路由，导致 Tavily/SearXNG 国际结果混入。现改为先用 AKShare 拉一次全量个股新闻池，按关键词分发到各维度（最新消息/风险排查/公司公告/业绩预期/机构分析/行业）；有 AKShare 结果的维度不再调用外部搜索引擎，无结果维度才退回 Tavily/SearXNG。
+
 ## [3.14.1] - 2026-04-26
 
 - [测试] 修正大盘复盘 prompt 测试对“明日交易计划”标题的断言，并同步桌面端版本号，恢复发布 gate。

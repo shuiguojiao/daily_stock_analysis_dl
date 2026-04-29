@@ -1516,9 +1516,9 @@ class GeminiAnalyzer:
 ### 均线系统（关键判断指标）
 | 均线 | 数值 | 说明 |
 |------|------|------|
-| MA5 | {today.get('ma5', 'N/A')} | 短期趋势线 |
-| MA10 | {today.get('ma10', 'N/A')} | 中短期趋势线 |
-| MA20 | {today.get('ma20', 'N/A')} | 中期趋势线 |
+| MA5 | {round(today.get('ma5', 0), 2) if today.get('ma5') is not None else 'N/A'} | 短期趋势线 |
+| MA10 | {round(today.get('ma10', 0), 2) if today.get('ma10') is not None else 'N/A'} | 中短期趋势线 |
+| MA20 | {round(today.get('ma20', 0), 2) if today.get('ma20') is not None else 'N/A'} | 中期趋势线 |
 | 均线形态 | {context.get('ma_status', unknown_text)} | 多头/空头/缠绕 |
 """
         
@@ -1651,6 +1651,50 @@ class GeminiAnalyzer:
 {chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
 """
         
+        # 添加 RSI / MACD 技术指标
+        if 'trend_analysis' in context:
+            trend = context['trend_analysis']
+            rsi6  = trend.get('rsi_6')
+            rsi12 = trend.get('rsi_12')
+            rsi24 = trend.get('rsi_24')
+            if rsi6 is not None:
+                prompt += f"""
+### RSI 指标（超买超卖）
+| 指标 | 数值 | 状态 |
+|------|------|------|
+| RSI(6) | {rsi6:.1f} | {trend.get('rsi_status', '')} |
+| RSI(12) | {rsi12:.1f if rsi12 is not None else 'N/A'} | |
+| RSI(24) | {rsi24:.1f if rsi24 is not None else 'N/A'} | |
+
+> RSI 信号：{trend.get('rsi_signal', '无')}
+"""
+            dif = trend.get('macd_dif')
+            dea = trend.get('macd_dea')
+            bar = trend.get('macd_bar')
+            if dif is not None:
+                bar_desc = "红柱（多头）" if (bar or 0) > 0 else "绿柱（空头）"
+                prompt += f"""
+### MACD 指标（趋势确认）
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| DIF（快线） | {dif:.4f} | |
+| DEA（慢线） | {dea:.4f if dea is not None else 'N/A'} | |
+| MACD 柱 | {bar:.4f if bar is not None else 'N/A'} | {bar_desc} |
+| MACD 状态 | {trend.get('macd_status', '')} | |
+
+> MACD 信号：{trend.get('macd_signal', '无')}
+"""
+
+        # 添加所属板块
+        boards = context.get('belong_boards', [])
+        if boards:
+            board_names = '、'.join(b['name'] for b in boards[:10] if b.get('name'))
+            if board_names:
+                prompt += f"""
+### 所属板块
+{board_names}
+"""
+
         # 添加昨日对比数据
         if 'yesterday' in context:
             volume_change = context.get('volume_change_ratio', 'N/A')

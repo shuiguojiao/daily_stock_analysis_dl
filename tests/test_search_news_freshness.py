@@ -20,9 +20,12 @@ from src.search_service import SearchResponse, SearchResult, SearchService
 
 
 def _result(title: str, published_date: str | None) -> SearchResult:
+    # Embed the codes used by the test cases (digits/ASCII only) so the
+    # relevance gate is satisfied without contaminating the title-language
+    # heuristic that the prioritization tests rely on.
     return SearchResult(
         title=title,
-        snippet="snippet",
+        snippet="snippet 600519 AAPL 510300",
         url=f"https://example.com/{title}",
         source="example.com",
         published_date=published_date,
@@ -284,8 +287,8 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         fresh_iso = fresh_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
         for stock_code, stock_name, expected_lang, expected_country, title, description in (
-            ("600519", "贵州茅台", "zh-hans", "CN", "中文资讯", "中文摘要"),
-            ("AAPL", "Apple", "en", "US", "Apple earnings beat", "English summary"),
+            ("600519", "贵州茅台", "zh-hans", "CN", "贵州茅台 600519 中文资讯", "贵州茅台 中文摘要"),
+            ("AAPL", "Apple", "en", "US", "Apple AAPL earnings beat", "Apple English summary"),
         ):
             with self.subTest(stock_code=stock_code):
                 fake_response = MagicMock()

@@ -143,7 +143,7 @@ class SearchServiceConcurrencyTestCase(unittest.TestCase):
                 results=[
                     SearchResult(
                         title="fresh-news",
-                        snippet="snippet",
+                        snippet="snippet 600519",
                         url="https://example.com/fresh-news",
                         source="example.com",
                         published_date=datetime.now().date().isoformat(),

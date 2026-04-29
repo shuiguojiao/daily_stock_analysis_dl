@@ -115,6 +115,7 @@ class StockAnalysisPipeline:
                 searxng_public_instances_enabled=self.config.searxng_public_instances_enabled,
                 news_max_age_days=self.config.news_max_age_days,
                 news_strategy_profile=getattr(self.config, "news_strategy_profile", "short"),
+                news_akshare_enabled=getattr(self.config, "news_akshare_enabled", True),
             )
         except Exception as exc:
             logger.warning("搜索服务初始化失败，将以无搜索模式运行: %s", exc, exc_info=True)
@@ -603,6 +604,18 @@ class StockAnalysisPipeline:
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
+                # RSI
+                'rsi_6': trend_result.rsi_6,
+                'rsi_12': trend_result.rsi_12,
+                'rsi_24': trend_result.rsi_24,
+                'rsi_status': trend_result.rsi_status.value,
+                'rsi_signal': trend_result.rsi_signal,
+                # MACD
+                'macd_dif': trend_result.macd_dif,
+                'macd_dea': trend_result.macd_dea,
+                'macd_bar': trend_result.macd_bar,
+                'macd_status': trend_result.macd_status.value,
+                'macd_signal': trend_result.macd_signal,
             }
 
         # Issue #234: Override today with realtime OHLC + trend MA for intraday analysis
@@ -676,7 +689,7 @@ class StockAnalysisPipeline:
         )
 
         # P0: append unified fundamental block; keep as additional context only
-        enhanced["fundamental_context"] = (
+        fc = (
             fundamental_context
             if isinstance(fundamental_context, dict)
             else self.fetcher_manager.build_failed_fundamental_context(
@@ -684,6 +697,9 @@ class StockAnalysisPipeline:
                 "invalid fundamental context",
             )
         )
+        enhanced["fundamental_context"] = fc
+        # 把板块列表提升到顶层，让 analyzer prompt 可直接访问
+        enhanced["belong_boards"] = fc.get("belong_boards", []) if isinstance(fc, dict) else []
 
         return enhanced
 
