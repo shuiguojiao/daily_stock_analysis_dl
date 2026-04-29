@@ -1559,10 +1559,10 @@ class AkShareNewsProvider(BaseSearchProvider):
         return True
 
     def applicable_to_stock(self, stock_code: str) -> bool:
-        # A 股标志：后缀 .SH 或 .SZ；无后缀时退回 6 位纯数字兜底
+        # A 股标志：后缀 .SH / .SS（上交所）或 .SZ（深交所）；无后缀时退回 6 位纯数字兜底
         code = (stock_code or "").strip().upper()
         if "." in code:
-            return code.endswith(".SH") or code.endswith(".SZ")
+            return code.endswith(".SH") or code.endswith(".SS") or code.endswith(".SZ")
         return code.isdigit() and len(code) == 6
 
     @staticmethod

@@ -43,9 +43,10 @@ class AkShareNewsProviderTestCase(unittest.TestCase):
         from src.search_service import AkShareNewsProvider
 
         p = AkShareNewsProvider(enabled=True)
-        # .SH / .SZ suffix → A 股
+        # .SH / .SS（上交所）/ .SZ（深交所） → A 股
         self.assertTrue(p.applicable_to_stock("300769.SZ"))
         self.assertTrue(p.applicable_to_stock("600519.SH"))
+        self.assertTrue(p.applicable_to_stock("603338.SS"))
         self.assertTrue(p.applicable_to_stock("000001.SZ"))
         # 无后缀 6 位数字兜底
         self.assertTrue(p.applicable_to_stock("600519"))
