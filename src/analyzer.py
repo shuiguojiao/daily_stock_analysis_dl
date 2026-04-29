@@ -1658,13 +1658,14 @@ class GeminiAnalyzer:
             rsi12 = trend.get('rsi_12')
             rsi24 = trend.get('rsi_24')
             if rsi6 is not None:
+                fmt1f = lambda v: f"{v:.1f}" if v is not None else "N/A"
                 prompt += f"""
 ### RSI 指标（超买超卖）
 | 指标 | 数值 | 状态 |
 |------|------|------|
-| RSI(6) | {rsi6:.1f} | {trend.get('rsi_status', '')} |
-| RSI(12) | {rsi12:.1f if rsi12 is not None else 'N/A'} | |
-| RSI(24) | {rsi24:.1f if rsi24 is not None else 'N/A'} | |
+| RSI(6) | {fmt1f(rsi6)} | {trend.get('rsi_status', '')} |
+| RSI(12) | {fmt1f(rsi12)} | |
+| RSI(24) | {fmt1f(rsi24)} | |
 
 > RSI 信号：{trend.get('rsi_signal', '无')}
 """
@@ -1672,14 +1673,15 @@ class GeminiAnalyzer:
             dea = trend.get('macd_dea')
             bar = trend.get('macd_bar')
             if dif is not None:
+                fmt4f = lambda v: f"{v:.4f}" if v is not None else "N/A"
                 bar_desc = "红柱（多头）" if (bar or 0) > 0 else "绿柱（空头）"
                 prompt += f"""
 ### MACD 指标（趋势确认）
 | 指标 | 数值 | 说明 |
 |------|------|------|
-| DIF（快线） | {dif:.4f} | |
-| DEA（慢线） | {dea:.4f if dea is not None else 'N/A'} | |
-| MACD 柱 | {bar:.4f if bar is not None else 'N/A'} | {bar_desc} |
+| DIF（快线） | {fmt4f(dif)} | |
+| DEA（慢线） | {fmt4f(dea)} | |
+| MACD 柱 | {fmt4f(bar)} | {bar_desc} |
 | MACD 状态 | {trend.get('macd_status', '')} | |
 
 > MACD 信号：{trend.get('macd_signal', '无')}
