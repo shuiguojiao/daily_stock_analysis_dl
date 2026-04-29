@@ -1560,10 +1560,14 @@ class AkShareNewsProvider(BaseSearchProvider):
 
     def applicable_to_stock(self, stock_code: str) -> bool:
         # A 股标志：后缀 .SH / .SS（上交所）或 .SZ（深交所）；无后缀时退回 6 位纯数字兜底
+        # B 股（深圳 200xxx / 上海 900xxx）stock_news_em 不支持，直接排除
         code = (stock_code or "").strip().upper()
+        bare = code.split(".")[0]
+        if bare.startswith("200") or bare.startswith("900"):
+            return False
         if "." in code:
             return code.endswith(".SH") or code.endswith(".SS") or code.endswith(".SZ")
-        return code.isdigit() and len(code) == 6
+        return bare.isdigit() and len(bare) == 6
 
     @staticmethod
     def _extract_a_share_code(query: str, fallback: Optional[str] = None) -> Optional[str]:

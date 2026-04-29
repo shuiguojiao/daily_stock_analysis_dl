@@ -51,6 +51,10 @@ class AkShareNewsProviderTestCase(unittest.TestCase):
         # 无后缀 6 位数字兜底
         self.assertTrue(p.applicable_to_stock("600519"))
         self.assertTrue(p.applicable_to_stock("000001"))
+        # B 股（深圳 200xxx / 上海 900xxx）→ 不适用，stock_news_em 不支持
+        self.assertFalse(p.applicable_to_stock("200726.SZ"))
+        self.assertFalse(p.applicable_to_stock("200625.SZ"))
+        self.assertFalse(p.applicable_to_stock("900926.SS"))
         # 港股 / 美股 / 其他 → 不适用
         self.assertFalse(p.applicable_to_stock("AAPL"))
         self.assertFalse(p.applicable_to_stock("00700.HK"))
