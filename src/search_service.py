@@ -3697,9 +3697,12 @@ class SearchService:
                 continue
 
             # 退回到关键词搜索引擎
+            # 大陆 A 股不使用 Tavily（结果多为英文/无关），仅美股/港股允许 Tavily
             available_providers = [
                 p for p in self._providers
-                if p.is_available and not isinstance(p, AkShareNewsProvider)
+                if p.is_available
+                and not isinstance(p, AkShareNewsProvider)
+                and (is_foreign or not isinstance(p, TavilySearchProvider))
             ]
             if not available_providers:
                 break
